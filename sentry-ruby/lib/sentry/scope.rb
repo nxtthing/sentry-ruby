@@ -16,6 +16,7 @@ module Sentry
       :user,
       :level,
       :breadcrumbs,
+      :attachments,
       :fingerprint,
       :event_processors,
       :rack_env,
@@ -56,6 +57,7 @@ module Sentry
       event.fingerprint = fingerprint
       event.level = level
       event.breadcrumbs = breadcrumbs
+      event.attachments = attachments
       event.rack_env = rack_env if rack_env
 
       unless @event_processors.empty?
@@ -74,6 +76,12 @@ module Sentry
       breadcrumbs.record(breadcrumb)
     end
 
+
+    def add_attachment(attachment_hash)
+      check_argument_type!(attachment_hash, Hash)
+      attachments << attachment_hash
+    end
+
     # Clears the scope's breadcrumbs buffer
     # @return [void]
     def clear_breadcrumbs
@@ -84,6 +92,7 @@ module Sentry
     def dup
       copy = super
       copy.breadcrumbs = breadcrumbs.dup
+      copy.attachments = attachments.deep_dup
       copy.contexts = contexts.deep_dup
       copy.extra = extra.deep_dup
       copy.tags = tags.deep_dup
@@ -101,6 +110,7 @@ module Sentry
     # @return [void]
     def update_from_scope(scope)
       self.breadcrumbs = scope.breadcrumbs
+      self.attachments = scope.attachments
       self.contexts = scope.contexts
       self.extra = scope.extra
       self.tags = scope.tags
@@ -280,6 +290,7 @@ module Sentry
       @user = {}
       @level = :error
       @fingerprint = []
+      @attachments = []
       @transaction_names = []
       @transaction_sources = []
       @event_processors = []
