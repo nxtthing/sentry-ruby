@@ -37,6 +37,8 @@ module Sentry
     # @return [RequestInterface]
     attr_reader :request
 
+    attr_accessor :attachments
+
     # @param configuration [Configuration]
     # @param integration_meta [Hash, nil]
     # @param message [String, nil]
@@ -54,6 +56,7 @@ module Sentry
       @tags          = {}
 
       @fingerprint = []
+      @attachments = []
 
       # configuration data that's directly used by events
       @server_name = configuration.server_name

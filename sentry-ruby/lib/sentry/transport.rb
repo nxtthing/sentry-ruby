@@ -157,6 +157,19 @@ module Sentry
       client_report_headers, client_report_payload = fetch_pending_client_report
       envelope.add_item(client_report_headers, client_report_payload) if client_report_headers
 
+      event.attachments.each do |attachment|
+        envelope.add_item(
+          {
+            type: "attachment",
+            length: attachment[:data].length,
+            filename: attachment[:filename],
+            content_type: attachment[:content_type],
+            attachment_type: attachment[:attachment_type]
+          },
+          attachment[:data]
+        )
+      end
+
       envelope
     end
 

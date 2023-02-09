@@ -26,19 +26,26 @@ module Sentry
       end
 
       def serialize
-        result = to_s
-
-        if result.bytesize > MAX_SERIALIZED_PAYLOAD_SIZE
-          remove_breadcrumbs!
+        if @headers[:type] == "attachment"
+          <<~ITEM
+            #{JSON.generate(@headers)}
+            #{@payload}
+          ITEM
+        else
           result = to_s
-        end
 
-        if result.bytesize > MAX_SERIALIZED_PAYLOAD_SIZE
-          reduce_stacktrace!
-          result = to_s
-        end
+          if result.bytesize > MAX_SERIALIZED_PAYLOAD_SIZE
+            remove_breadcrumbs!
+            result = to_s
+          end
 
-        [result, result.bytesize > MAX_SERIALIZED_PAYLOAD_SIZE]
+          if result.bytesize > MAX_SERIALIZED_PAYLOAD_SIZE
+            reduce_stacktrace!
+            result = to_s
+          end
+
+          [result, result.bytesize > MAX_SERIALIZED_PAYLOAD_SIZE]
+        end
       end
 
       def size_breakdown
