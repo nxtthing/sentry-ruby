@@ -14,6 +14,8 @@ module Sentry
   class Configuration
     include CustomInspection
     include LoggingHelper
+    include ArgumentCheckingHelper
+
     # Directories to be recognized as part of your app. e.g. if you
     # have an `engines` dir at the root of your project, you may want
     # to set this to something like /(app|config|engines|lib)/
@@ -179,7 +181,7 @@ module Sentry
     # Release tag to be passed with every event sent to Sentry.
     # We automatically try to set this to a git SHA or Capistrano release.
     # @return [String]
-    attr_accessor :release
+    attr_reader :release
 
     # The sampling factor to apply to events. A value of 0.0 will not send
     # any events, and a value of 1.0 will send 100% of events.
@@ -227,6 +229,11 @@ module Sentry
     # @return [Proc]
     attr_accessor :traces_sampler
 
+    # Easier way to use performance tracing
+    # If set to true, will set traces_sample_rate to 1.0
+    # @return [Boolean, nil]
+    attr_reader :enable_tracing
+
     # Send diagnostic client reports about dropped events, true by default
     # tries to attach to an existing envelope max once every 30s
     # @return [Boolean]
@@ -239,6 +246,12 @@ module Sentry
     # The instrumenter to use, :sentry or :otel
     # @return [Symbol]
     attr_reader :instrumenter
+
+    # Take a float between 0.0 and 1.0 as the sample rate for capturing profiles.
+    # Note that this rate is relative to traces_sample_rate / traces_sampler,
+    # i.e. the profile is sampled by this rate after the transaction is sampled.
+    # @return [Float, nil]
+    attr_reader :profiles_sample_rate
 
     # these are not config options
     # @!visibility private
@@ -316,6 +329,7 @@ module Sentry
       self.rack_env_whitelist = RACK_ENV_WHITELIST_DEFAULT
       self.traces_sample_rate = nil
       self.traces_sampler = nil
+      self.enable_tracing = nil
 
       @transport = Transport::Configuration.new
       @gem_specs = Hash[Gem::Specification.map { |spec| [spec.name, spec.version.to_s] }] if Gem::Specification.respond_to?(:map)
@@ -328,6 +342,12 @@ module Sentry
     end
 
     alias server= dsn=
+
+    def release=(value)
+      check_argument_type!(value, String, NilClass)
+
+      @release = value
+    end
 
     def async=(value)
       check_callable!("async", value)
@@ -384,6 +404,16 @@ module Sentry
       @instrumenter = INSTRUMENTERS.include?(instrumenter) ? instrumenter : :sentry
     end
 
+    def enable_tracing=(enable_tracing)
+      @enable_tracing = enable_tracing
+      @traces_sample_rate ||= 1.0 if enable_tracing
+    end
+
+    def profiles_sample_rate=(profiles_sample_rate)
+      log_info("Please make sure to include the 'stackprof' gem in your Gemfile to use Profiling with Sentry.") unless defined?(StackProf)
+      @profiles_sample_rate = profiles_sample_rate
+    end
+
     def sending_allowed?
       @errors = []
 
@@ -414,7 +444,20 @@ module Sentry
     end
 
     def tracing_enabled?
-      !!((@traces_sample_rate && @traces_sample_rate >= 0.0 && @traces_sample_rate <= 1.0) || @traces_sampler) && sending_allowed?
+      valid_sampler = !!((@traces_sample_rate &&
+                          @traces_sample_rate >= 0.0 &&
+                          @traces_sample_rate <= 1.0) ||
+                         @traces_sampler)
+
+      (@enable_tracing != false) && valid_sampler && sending_allowed?
+    end
+
+    def profiling_enabled?
+      valid_sampler = !!(@profiles_sample_rate &&
+                         @profiles_sample_rate >= 0.0 &&
+                         @profiles_sample_rate <= 1.0)
+
+      tracing_enabled? && valid_sampler && sending_allowed?
     end
 
     # @return [String, nil]
@@ -442,7 +485,7 @@ module Sentry
     def detect_release
       return unless sending_allowed?
 
-      self.release ||= ReleaseDetector.detect_release(project_root: project_root, running_on_heroku: running_on_heroku?)
+      @release ||= ReleaseDetector.detect_release(project_root: project_root, running_on_heroku: running_on_heroku?)
 
       if running_on_heroku? && release.nil?
         log_warn(HEROKU_DYNO_METADATA_MESSAGE)

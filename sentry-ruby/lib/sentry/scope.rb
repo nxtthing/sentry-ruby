@@ -202,6 +202,10 @@ module Sentry
     # @return [Hash]
     def set_contexts(contexts_hash)
       check_argument_type!(contexts_hash, Hash)
+      contexts_hash.values.each do |val|
+        check_argument_type!(val, Hash)
+      end
+
       @contexts.merge!(contexts_hash) do |key, old, new|
         old.merge(new)
       end
@@ -316,7 +320,8 @@ module Sentry
               name: uname[:sysname] || RbConfig::CONFIG["host_os"],
               version: uname[:version],
               build: uname[:release],
-              kernel_version: uname[:version]
+              kernel_version: uname[:version],
+              machine: uname[:machine]
             }
           end
       end

@@ -88,8 +88,10 @@ module Sentry
       }
 
       sampling_context.merge!(custom_sampling_context)
-
       transaction.set_initial_sample_decision(sampling_context: sampling_context)
+
+      transaction.start_profiler!
+
       transaction
     end
 
@@ -122,6 +124,7 @@ module Sentry
 
       options[:hint] ||= {}
       options[:hint][:exception] = exception
+
       event = current_client.event_from_exception(exception, options[:hint])
 
       return unless event
