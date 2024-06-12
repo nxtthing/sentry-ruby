@@ -4,6 +4,7 @@ module Sentry
   # @api private
   class Redis
     OP_NAME = "db.redis"
+    SPAN_ORIGIN = "auto.db.redis"
     LOGGER_NAME = :redis_logger
 
     def initialize(commands, host, port, db)
@@ -13,13 +14,16 @@ module Sentry
     def instrument
       return yield unless Sentry.initialized?
 
-      Sentry.with_child_span(op: OP_NAME, start_timestamp: Sentry.utc_now.to_f) do |span|
+      Sentry.with_child_span(op: OP_NAME, start_timestamp: Sentry.utc_now.to_f, origin: SPAN_ORIGIN) do |span|
         yield.tap do
           record_breadcrumb
 
           if span
             span.set_description(commands_description)
-            span.set_data(:server, server_description)
+            span.set_data(Span::DataConventions::DB_SYSTEM, "redis")
+            span.set_data(Span::DataConventions::DB_NAME, db)
+            span.set_data(Span::DataConventions::SERVER_ADDRESS, host)
+            span.set_data(Span::DataConventions::SERVER_PORT, port)
           end
         end
       end
@@ -30,6 +34,7 @@ module Sentry
     attr_reader :commands, :host, :port, :db
 
     def record_breadcrumb
+      return unless Sentry.initialized?
       return unless Sentry.configuration.breadcrumbs_logger.include?(LOGGER_NAME)
 
       Sentry.add_breadcrumb(
@@ -95,8 +100,10 @@ end
 
 if defined?(::Redis::Client)
   if Gem::Version.new(::Redis::VERSION) < Gem::Version.new("5.0")
-    Sentry.register_patch(Sentry::Redis::OldClientPatch, ::Redis::Client)
+    Sentry.register_patch(:redis, Sentry::Redis::OldClientPatch, ::Redis::Client)
   elsif defined?(RedisClient)
-    RedisClient.register(Sentry::Redis::GlobalRedisInstrumentation)
+    Sentry.register_patch(:redis) do
+      RedisClient.register(Sentry::Redis::GlobalRedisInstrumentation)
+    end
   end
 end

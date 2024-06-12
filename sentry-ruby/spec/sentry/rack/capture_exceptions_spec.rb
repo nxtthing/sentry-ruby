@@ -25,6 +25,17 @@ RSpec.describe Sentry::Rack::CaptureExceptions, rack: true do
       expect(last_frame[:vars]).to eq(nil)
     end
 
+    it 'has the correct mechanism' do
+      app = ->(_e) { raise exception }
+      stack = described_class.new(app)
+
+      expect { stack.call(env) }.to raise_error(ZeroDivisionError)
+
+      event = last_sentry_event.to_hash
+      mechanism = event.dig(:exception, :values, 0, :mechanism)
+      expect(mechanism).to eq({ type: 'rack', handled: false })
+    end
+
     it 'captures the exception from rack.exception' do
       app = lambda do |e|
         e['rack.exception'] = exception
@@ -180,7 +191,7 @@ RSpec.describe Sentry::Rack::CaptureExceptions, rack: true do
       end
       it "doesn't pollute the top-level scope" do
         request_1 = lambda do |e|
-          Sentry.configure_scope { |s| s.set_tags({tag_1: "foo"}) }
+          Sentry.configure_scope { |s| s.set_tags({ tag_1: "foo" }) }
           Sentry.capture_message("test")
           [200, {}, ["ok"]]
         end
@@ -194,7 +205,7 @@ RSpec.describe Sentry::Rack::CaptureExceptions, rack: true do
       end
       it "doesn't pollute other request's scope" do
         request_1 = lambda do |e|
-          Sentry.configure_scope { |s| s.set_tags({tag_1: "foo"}) }
+          Sentry.configure_scope { |s| s.set_tags({ tag_1: "foo" }) }
           e['rack.exception'] = Exception.new
           [200, {}, ["ok"]]
         end
@@ -206,7 +217,7 @@ RSpec.describe Sentry::Rack::CaptureExceptions, rack: true do
         expect(Sentry.get_current_scope.tags).to eq(tag_1: "don't change me")
 
         request_2 = proc do |e|
-          Sentry.configure_scope { |s| s.set_tags({tag_2: "bar"}) }
+          Sentry.configure_scope { |s| s.set_tags({ tag_2: "bar" }) }
           e['rack.exception'] = Exception.new
           [200, {}, ["ok"]]
         end
@@ -253,6 +264,7 @@ RSpec.describe Sentry::Rack::CaptureExceptions, rack: true do
         expect(transaction.timestamp).not_to be_nil
         expect(transaction.contexts.dig(:trace, :status)).to eq("ok")
         expect(transaction.contexts.dig(:trace, :op)).to eq("http.server")
+        expect(transaction.contexts.dig(:trace, :origin)).to eq("auto.http.rack")
         expect(transaction.spans.count).to eq(0)
       end
 
@@ -562,6 +574,34 @@ RSpec.describe Sentry::Rack::CaptureExceptions, rack: true do
           expect(sentry_events).to be_empty
         end
       end
+    end
+  end
+
+  describe "tracing without performance" do
+    let(:incoming_prop_context) { Sentry::PropagationContext.new(Sentry::Scope.new) }
+    let(:env) do
+      {
+        "HTTP_SENTRY_TRACE" => incoming_prop_context.get_traceparent,
+        "HTTP_BAGGAGE" => incoming_prop_context.get_baggage.serialize
+      }
+    end
+
+    let(:stack) do
+      app = ->(_e) { raise exception }
+      described_class.new(app)
+    end
+
+    before { perform_basic_setup }
+
+    it "captures exception with correct DSC and trace context" do
+      expect { stack.call(env) }.to raise_error(ZeroDivisionError)
+
+      trace_context = last_sentry_event.contexts[:trace]
+      expect(trace_context[:trace_id]).to eq(incoming_prop_context.trace_id)
+      expect(trace_context[:parent_span_id]).to eq(incoming_prop_context.span_id)
+      expect(trace_context[:span_id].length).to eq(16)
+
+      expect(last_sentry_event.dynamic_sampling_context).to eq(incoming_prop_context.get_dynamic_sampling_context)
     end
   end
 

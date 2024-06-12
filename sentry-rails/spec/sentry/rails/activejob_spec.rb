@@ -55,6 +55,17 @@ class ProblematicRescuedActiveJob < FailedWithExtraJob
   end
 end
 
+class NormalJobWithCron < NormalJob
+  include Sentry::Cron::MonitorCheckIns
+  sentry_monitor_check_ins
+end
+
+class FailedJobWithCron < FailedJob
+  include Sentry::Cron::MonitorCheckIns
+  sentry_monitor_check_ins slug: "failed_job", monitor_config: Sentry::Cron::MonitorConfig.from_crontab("5 * * * *")
+end
+
+
 RSpec.describe "without Sentry initialized" do
   it "runs job" do
     expect { FailedJob.perform_now }.to raise_error(FailedJob::TestError)
@@ -121,7 +132,7 @@ RSpec.describe "ActiveJob integration" do
         [
           {
             "integer" => 1,
-            "post" => post.to_s,
+            "post" => post.to_s
           }
         ]
       )
@@ -171,6 +182,7 @@ RSpec.describe "ActiveJob integration" do
       expect(transaction.contexts.dig(:trace, :span_id)).to be_present
       expect(transaction.contexts.dig(:trace, :status)).to eq("ok")
       expect(transaction.contexts.dig(:trace, :op)).to eq("queue.active_job")
+      expect(transaction.contexts.dig(:trace, :origin)).to eq("auto.queue.active_job")
 
       expect(transaction.spans.count).to eq(1)
       expect(transaction.spans.first[:op]).to eq("db.sql.active_record")
@@ -188,6 +200,7 @@ RSpec.describe "ActiveJob integration" do
         expect(transaction.contexts.dig(:trace, :trace_id)).to be_present
         expect(transaction.contexts.dig(:trace, :span_id)).to be_present
         expect(transaction.contexts.dig(:trace, :status)).to eq("internal_error")
+        expect(transaction.contexts.dig(:trace, :origin)).to eq("auto.queue.active_job")
 
         event = transport.events.last
         expect(event.transaction).to eq("FailedWithExtraJob")
@@ -308,6 +321,70 @@ RSpec.describe "ActiveJob integration" do
       ensure
         # this doesn't affect test result, but we shouldn't change it anyway
         FailedJob.queue_adapter = original_queue_adapter
+      end
+    end
+  end
+
+  context "with cron monitoring mixin" do
+    context "normal job" do
+      it "returns #perform method's return value" do
+        expect(NormalJobWithCron.perform_now).to eq("foo")
+      end
+
+      it "captures two check ins" do
+        NormalJobWithCron.perform_now
+
+        expect(transport.events.size).to eq(2)
+
+        first = transport.events[0]
+        check_in_id = first.check_in_id
+        expect(first).to be_a(Sentry::CheckInEvent)
+        expect(first.to_hash).to include(
+          type: 'check_in',
+          check_in_id: check_in_id,
+          monitor_slug: "normaljobwithcron",
+          status: :in_progress
+        )
+
+        second = transport.events[1]
+        expect(second).to be_a(Sentry::CheckInEvent)
+        expect(second.to_hash).to include(
+          :duration,
+          type: 'check_in',
+          check_in_id: check_in_id,
+          monitor_slug: "normaljobwithcron",
+          status: :ok
+        )
+      end
+    end
+
+    context "failed job" do
+      it "captures two check ins" do
+        expect { FailedJobWithCron.perform_now }.to raise_error(FailedJob::TestError)
+
+        expect(transport.events.size).to eq(3)
+
+        first = transport.events[0]
+        check_in_id = first.check_in_id
+        expect(first).to be_a(Sentry::CheckInEvent)
+        expect(first.to_hash).to include(
+          type: 'check_in',
+          check_in_id: check_in_id,
+          monitor_slug: "failed_job",
+          status: :in_progress,
+          monitor_config: { schedule: { type: :crontab, value: "5 * * * *" } }
+        )
+
+        second = transport.events[1]
+        expect(second).to be_a(Sentry::CheckInEvent)
+        expect(second.to_hash).to include(
+          :duration,
+          type: 'check_in',
+          check_in_id: check_in_id,
+          monitor_slug: "failed_job",
+          status: :error,
+          monitor_config: { schedule: { type: :crontab, value: "5 * * * *" } }
+        )
       end
     end
   end

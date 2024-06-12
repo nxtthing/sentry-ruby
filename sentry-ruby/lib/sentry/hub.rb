@@ -116,7 +116,11 @@ module Sentry
     end
 
     def capture_exception(exception, **options, &block)
-      check_argument_type!(exception, ::Exception)
+      if RUBY_PLATFORM == "java"
+        check_argument_type!(exception, ::Exception, ::Java::JavaLang::Throwable)
+      else
+        check_argument_type!(exception, ::Exception)
+      end
 
       return if Sentry.exception_captured?(exception)
 
@@ -152,6 +156,30 @@ module Sentry
       capture_event(event, **options, &block)
     end
 
+    def capture_check_in(slug, status, **options)
+      check_argument_type!(slug, ::String)
+      check_argument_includes!(status, Sentry::CheckInEvent::VALID_STATUSES)
+
+      return unless current_client
+
+      options[:hint] ||= {}
+      options[:hint][:slug] = slug
+
+      event = current_client.event_from_check_in(
+        slug,
+        status,
+        options[:hint],
+        duration: options.delete(:duration),
+        monitor_config: options.delete(:monitor_config),
+        check_in_id: options.delete(:check_in_id)
+      )
+
+      return unless event
+
+      capture_event(event, **options)
+      event.check_in_id
+    end
+
     def capture_event(event, **options, &block)
       check_argument_type!(event, Sentry::Event)
 
@@ -165,7 +193,12 @@ module Sentry
       elsif custom_scope = options[:scope]
         scope.update_from_scope(custom_scope)
       elsif !options.empty?
-        scope.update_from_options(**options)
+        unsupported_option_keys = scope.update_from_options(**options)
+
+        configuration.log_debug <<~MSG
+          Options #{unsupported_option_keys} are not supported and will not be applied to the event.
+          You may want to set them under the `extra` option.
+        MSG
       end
 
       event = current_client.capture_event(event, scope, hint)
@@ -174,7 +207,7 @@ module Sentry
         configuration.log_debug(event.to_json_compatible)
       end
 
-      @last_event_id = event&.event_id unless event.is_a?(Sentry::TransactionEvent)
+      @last_event_id = event&.event_id if event.is_a?(Sentry::ErrorEvent)
       event
     end
 
@@ -217,12 +250,62 @@ module Sentry
     end
 
     def with_session_tracking(&block)
-      return yield unless configuration.auto_session_tracking
+      return yield unless configuration.session_tracking?
 
       start_session
       yield
     ensure
       end_session
+    end
+
+    def get_traceparent
+      return nil unless current_scope
+
+      current_scope.get_span&.to_sentry_trace ||
+        current_scope.propagation_context.get_traceparent
+    end
+
+    def get_baggage
+      return nil unless current_scope
+
+      current_scope.get_span&.to_baggage ||
+        current_scope.propagation_context.get_baggage&.serialize
+    end
+
+    def get_trace_propagation_headers
+      headers = {}
+
+      traceparent = get_traceparent
+      headers[SENTRY_TRACE_HEADER_NAME] = traceparent if traceparent
+
+      baggage = get_baggage
+      headers[BAGGAGE_HEADER_NAME] = baggage if baggage && !baggage.empty?
+
+      headers
+    end
+
+    def get_trace_propagation_meta
+      get_trace_propagation_headers.map do |k, v|
+        "<meta name=\"#{k}\" content=\"#{v}\">"
+      end.join("\n")
+    end
+
+    def continue_trace(env, **options)
+      configure_scope { |s| s.generate_propagation_context(env) }
+
+      return nil unless configuration.tracing_enabled?
+
+      propagation_context = current_scope.propagation_context
+      return nil unless propagation_context.incoming_trace
+
+      Transaction.new(
+        hub: self,
+        trace_id: propagation_context.trace_id,
+        parent_span_id: propagation_context.parent_span_id,
+        parent_sampled: propagation_context.parent_sampled,
+        baggage: propagation_context.baggage,
+        **options
+      )
     end
 
     private

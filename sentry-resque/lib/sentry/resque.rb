@@ -15,6 +15,8 @@ module Sentry
     end
 
     class SentryReporter
+      SPAN_ORIGIN = "auto.queue.resque"
+
       class << self
         def record(queue, worker, payload, &block)
           Sentry.with_scope do |scope|
@@ -25,13 +27,30 @@ module Sentry
 
               name = contexts.dig(:"Active-Job", :job_class) || contexts.dig(:"Resque", :job_class)
               scope.set_transaction_name(name, source: :task)
-              transaction = Sentry.start_transaction(name: scope.transaction_name, source: scope.transaction_source, op: "queue.resque")
+              transaction = Sentry.start_transaction(
+                name: scope.transaction_name,
+                source: scope.transaction_source,
+                op: "queue.resque",
+                origin: SPAN_ORIGIN
+              )
+
               scope.set_span(transaction) if transaction
 
               yield
 
               finish_transaction(transaction, 200)
             rescue Exception => exception
+              klass = if payload['class'].respond_to?(:constantize)
+                payload['class'].constantize
+              else
+                Object.const_get(payload['class'])
+              end
+
+              raise if Sentry.configuration.resque.report_after_job_retries &&
+                       defined?(::Resque::Plugins::Retry) == 'constant' &&
+                       klass.is_a?(::Resque::Plugins::Retry) &&
+                       !klass.retry_limit_reached?
+
               ::Sentry::Resque.capture_exception(exception, hint: { background: false })
               finish_transaction(transaction, 500)
               raise

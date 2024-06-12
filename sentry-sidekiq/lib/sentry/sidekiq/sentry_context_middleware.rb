@@ -1,9 +1,12 @@
+# frozen_string_literal: true
+
 require 'sentry/sidekiq/context_filter'
 
 module Sentry
   module Sidekiq
     class SentryContextServerMiddleware
-      OP_NAME = "queue.sidekiq".freeze
+      OP_NAME = "queue.sidekiq"
+      SPAN_ORIGIN = "auto.queue.sidekiq"
 
       def call(_worker, job, queue)
         return yield unless Sentry.initialized?
@@ -19,7 +22,7 @@ module Sentry
         scope.set_tags(build_tags(job["tags"]))
         scope.set_contexts(sidekiq: job.merge("queue" => queue))
         scope.set_transaction_name(context_filter.transaction_name, source: :task)
-        transaction = start_transaction(scope, job["sentry_trace"])
+        transaction = start_transaction(scope, job["trace_propagation_headers"])
         scope.set_span(transaction) if transaction
 
         begin
@@ -39,9 +42,15 @@ module Sentry
         Array(tags).each_with_object({}) { |name, tags_hash| tags_hash[:"sidekiq.#{name}"] = true }
       end
 
-      def start_transaction(scope, sentry_trace)
-        options = { name: scope.transaction_name, source: scope.transaction_source, op: OP_NAME }
-        transaction = Sentry::Transaction.from_sentry_trace(sentry_trace, **options) if sentry_trace
+      def start_transaction(scope, env)
+        options = {
+          name: scope.transaction_name,
+          source: scope.transaction_source,
+          op: OP_NAME,
+          origin: SPAN_ORIGIN
+        }
+
+        transaction = Sentry.continue_trace(env, **options)
         Sentry.start_transaction(transaction: transaction, **options)
       end
 
@@ -58,9 +67,8 @@ module Sentry
         return yield unless Sentry.initialized?
 
         user = Sentry.get_current_scope.user
-        transaction = Sentry.get_current_scope.get_transaction
         job["sentry_user"] = user unless user.empty?
-        job["sentry_trace"] = transaction.to_sentry_trace if transaction
+        job["trace_propagation_headers"] ||= Sentry.get_trace_propagation_headers
         yield
       end
     end

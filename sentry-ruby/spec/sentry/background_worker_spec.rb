@@ -12,7 +12,7 @@ RSpec.describe Sentry::BackgroundWorker do
   describe "#initialize" do
     context "when config.async is set" do
       before do
-        configuration.async = proc {}
+        configuration.async = proc { }
       end
 
       it "initializes a background_worker with ImmediateExecutor" do
@@ -28,10 +28,11 @@ RSpec.describe Sentry::BackgroundWorker do
 
     context "when config.background_worker_threads is set" do
       it "initializes a background worker with correct number of threads and queue size" do
+        configuration.background_worker_threads = 4
         worker = described_class.new(configuration)
 
         expect(worker.max_queue).to eq(30)
-        expect(worker.number_of_threads).to eq(Concurrent.processor_count)
+        expect(worker.number_of_threads).to eq(4)
       end
     end
 
@@ -62,7 +63,7 @@ RSpec.describe Sentry::BackgroundWorker do
         expect(worker.number_of_threads).to eq(5)
 
         expect(string_io.string).to match(
-          /Initializing the background worker with 5 threads/
+          /Initializing the Sentry background worker with 5 threads/
         )
       end
     end
@@ -91,6 +92,29 @@ RSpec.describe Sentry::BackgroundWorker do
       worker.shutdown
 
       expect(string_io.string).to match(/Shutting down background worker/)
+    end
+  end
+
+  describe "#full?" do
+    it "returns false if not a thread pool" do
+      configuration.background_worker_threads = 0
+      worker = described_class.new(configuration)
+      expect(worker.full?).to eq(false)
+    end
+
+    # skipping this on jruby because the capacity check is flaky
+    unless RUBY_PLATFORM == "java"
+      it "returns true if thread pool and full" do
+        configuration.background_worker_threads = 1
+        configuration.background_worker_max_queue = 1
+        worker = described_class.new(configuration)
+        expect(worker.full?).to eq(false)
+
+        2.times { worker.perform { sleep 0.1 } }
+        expect(worker.full?).to eq(true)
+        sleep 0.2
+        expect(worker.full?).to eq(false)
+      end
     end
   end
 end

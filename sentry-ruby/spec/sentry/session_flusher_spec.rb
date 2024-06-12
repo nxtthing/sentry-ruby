@@ -5,6 +5,7 @@ RSpec.describe Sentry::SessionFlusher do
 
   let(:configuration) do
     Sentry::Configuration.new.tap do |config|
+      config.dsn = Sentry::TestHelper::DUMMY_DSN
       config.release = 'test-release'
       config.environment = 'test'
       config.transport.transport_class = Sentry::DummyTransport
@@ -145,7 +146,7 @@ RSpec.describe Sentry::SessionFlusher do
 
       it "logs error" do
         subject.add_session(session)
-        expect(string_io.string).to match(/Session flusher thread creation failed/)
+        expect(string_io.string).to include("[#{described_class.name}] thread creation failed")
       end
     end
 
@@ -172,7 +173,7 @@ RSpec.describe Sentry::SessionFlusher do
   describe "#kill" do
     it "logs message when killing the thread" do
       subject.kill
-      expect(string_io.string).to match(/Killing session flusher/)
+      expect(string_io.string).to include("[#{described_class.name}] thread killed")
     end
   end
 end

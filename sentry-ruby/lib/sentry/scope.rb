@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "sentry/breadcrumb_buffer"
+require "sentry/propagation_context"
 require "etc"
 
 module Sentry
@@ -21,7 +22,8 @@ module Sentry
       :event_processors,
       :rack_env,
       :span,
-      :session
+      :session,
+      :propagation_context
     ]
 
     attr_reader(*ATTRIBUTES)
@@ -43,22 +45,26 @@ module Sentry
     # @param hint [Hash] the hint data that'll be passed to event processors.
     # @return [Event]
     def apply_to_event(event, hint = nil)
-      event.tags = tags.merge(event.tags)
-      event.user = user.merge(event.user)
-      event.extra = extra.merge(event.extra)
-      event.contexts = contexts.merge(event.contexts)
-      event.transaction = transaction_name if transaction_name
-      event.transaction_info = { source: transaction_source } if transaction_source
-
-      if span
-        event.contexts[:trace] = span.get_trace_context
+      unless event.is_a?(CheckInEvent)
+        event.tags = tags.merge(event.tags)
+        event.user = user.merge(event.user)
+        event.extra = extra.merge(event.extra)
+        event.contexts = contexts.merge(event.contexts)
+        event.transaction = transaction_name if transaction_name
+        event.transaction_info = { source: transaction_source } if transaction_source
+        event.fingerprint = fingerprint
+        event.level = level
+        event.breadcrumbs = breadcrumbs
+        event.attachments = attachments
+        event.rack_env = rack_env if rack_env
       end
 
-      event.fingerprint = fingerprint
-      event.level = level
-      event.breadcrumbs = breadcrumbs
-      event.attachments = attachments
-      event.rack_env = rack_env if rack_env
+      if span
+        event.contexts[:trace] ||= span.get_trace_context
+      else
+        event.contexts[:trace] ||= propagation_context.get_trace_context
+        event.dynamic_sampling_context ||= propagation_context.get_dynamic_sampling_context
+      end
 
       all_event_processors = self.class.global_event_processors + @event_processors
 
@@ -104,6 +110,7 @@ module Sentry
       copy.fingerprint = fingerprint.deep_dup
       copy.span = span.deep_dup
       copy.session = session.deep_dup
+      copy.propagation_context = propagation_context.deep_dup
       copy
     end
 
@@ -121,6 +128,7 @@ module Sentry
       self.transaction_sources = scope.transaction_sources
       self.fingerprint = scope.fingerprint
       self.span = scope.span
+      self.propagation_context = scope.propagation_context
     end
 
     # Updates the scope's data from the given options.
@@ -130,14 +138,15 @@ module Sentry
     # @param user [Hash]
     # @param level [String, Symbol]
     # @param fingerprint [Array]
-    # @return [void]
+    # @return [Array]
     def update_from_options(
       contexts: nil,
       extra: nil,
       tags: nil,
       user: nil,
       level: nil,
-      fingerprint: nil
+      fingerprint: nil,
+      **options
     )
       self.contexts.merge!(contexts) if contexts
       self.extra.merge!(extra) if extra
@@ -145,6 +154,9 @@ module Sentry
       self.user = user if user
       self.level = level if level
       self.fingerprint = fingerprint if fingerprint
+
+      # Returns unsupported option keys so we can notify users.
+      options.keys
     end
 
     # Sets the scope's rack_env attribute.
@@ -254,6 +266,12 @@ module Sentry
       @transaction_sources.last
     end
 
+    # These are high cardinality and thus bad.
+    # @return [Boolean]
+    def transaction_source_low_quality?
+      transaction_source == :url
+    end
+
     # Returns the associated Transaction object.
     # @return [Transaction, nil]
     def get_transaction
@@ -282,6 +300,13 @@ module Sentry
       @event_processors << block
     end
 
+    # Generate a new propagation context either from the incoming env headers or from scratch.
+    # @param env [Hash, nil]
+    # @return [void]
+    def generate_propagation_context(env = nil)
+      @propagation_context = PropagationContext.new(self, env)
+    end
+
     protected
 
     # for duplicating scopes internally
@@ -290,7 +315,7 @@ module Sentry
     private
 
     def set_default_value
-      @contexts = { :os => self.class.os_context, :runtime => self.class.runtime_context }
+      @contexts = { os: self.class.os_context, runtime: self.class.runtime_context }
       @extra = {}
       @tags = {}
       @user = {}
@@ -303,6 +328,7 @@ module Sentry
       @rack_env = {}
       @span = nil
       @session = nil
+      generate_propagation_context
       set_new_breadcrumb_buffer
     end
 
@@ -350,6 +376,5 @@ module Sentry
         global_event_processors << block
       end
     end
-
   end
 end

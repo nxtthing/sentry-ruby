@@ -33,6 +33,7 @@ RSpec.describe Sentry::Span do
       expect(context[:status]).to eq("ok")
       expect(context[:trace_id].length).to eq(32)
       expect(context[:span_id].length).to eq(16)
+      expect(context[:origin]).to eq('manual')
     end
   end
 
@@ -69,6 +70,17 @@ RSpec.describe Sentry::Span do
       expect(hash[:tags]).to eq({ "foo" => "bar" })
       expect(hash[:trace_id].length).to eq(32)
       expect(hash[:span_id].length).to eq(16)
+      expect(hash[:origin]).to eq('manual')
+    end
+
+    it 'has metric summary if present' do
+      key = [:c, 'incr', 'none', []]
+      subject.metrics_local_aggregator.add(key, 10)
+
+      hash = subject.to_hash
+      expect(hash[:_metrics_summary]).to eq({
+        'c:incr@none' => { count: 1, max: 10.0, min: 10.0, sum: 10.0, tags: {} }
+      })
     end
   end
 
@@ -77,7 +89,7 @@ RSpec.describe Sentry::Span do
       sentry_trace = subject.to_sentry_trace
 
       expect(sentry_trace).to eq("#{subject.trace_id}-#{subject.span_id}-1")
-      expect(sentry_trace).to match(Sentry::Transaction::SENTRY_TRACE_REGEXP)
+      expect(sentry_trace).to match(Sentry::PropagationContext::SENTRY_TRACE_REGEXP)
     end
 
     context "without sampled value" do
@@ -87,7 +99,7 @@ RSpec.describe Sentry::Span do
         sentry_trace = subject.to_sentry_trace
 
         expect(sentry_trace).to eq("#{subject.trace_id}-#{subject.span_id}-")
-        expect(sentry_trace).to match(Sentry::Transaction::SENTRY_TRACE_REGEXP)
+        expect(sentry_trace).to match(Sentry::PropagationContext::SENTRY_TRACE_REGEXP)
       end
     end
   end
@@ -265,7 +277,7 @@ RSpec.describe Sentry::Span do
       it "adds status_code (#{status_code}) to data and sets correct status (#{status})" do
         subject.set_http_status(status_code)
 
-        expect(subject.data["status_code"]).to eq(status_code)
+        expect(subject.data["http.response.status_code"]).to eq(status_code)
         expect(subject.status).to eq(status)
       end
     end
@@ -284,6 +296,14 @@ RSpec.describe Sentry::Span do
       subject.set_tag(:foo, "bar")
 
       expect(subject.tags).to eq({ foo: "bar" })
+    end
+  end
+
+  describe "#set_origin" do
+    it "sets origin" do
+      subject.set_origin('auto.http')
+
+      expect(subject.origin).to eq('auto.http')
     end
   end
 end
